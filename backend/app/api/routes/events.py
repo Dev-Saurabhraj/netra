@@ -2,7 +2,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
 from app.infrastructure.database.session import get_db
 from app.infrastructure.database.models.event import Event
@@ -17,6 +17,7 @@ router = APIRouter(prefix="/events", tags=["Events"])
 async def list_events(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
+    search: Optional[str] = None,
     severity: Optional[str] = None,
     event_type: Optional[str] = None,
     device_id: Optional[str] = None,
@@ -24,9 +25,18 @@ async def list_events(
     current_user: User = Depends(get_current_user),
 ):
     """
-    List network change and topology events with filtering and pagination.
+    List network change and topology events with filtering, search, and pagination.
     """
     query = select(Event)
+
+    if search:
+        search_pattern = f"%{search}%"
+        query = query.where(
+            or_(
+                Event.title.ilike(search_pattern),
+                Event.description.ilike(search_pattern),
+            )
+        )
 
     if severity:
         query = query.where(Event.severity == severity)

@@ -30,15 +30,15 @@ Infrastructure (FastAPI, PostgreSQL, Redis, Network Collectors)
 | Phase | Milestone | Deliverable | Status |
 | :--- | :--- | :--- | :--- |
 | **Phase 1** | **Foundation & Base Architecture** | FastAPI + PostgreSQL + Alembic + Auth + Base Models + React UI | ✅ **Completed** |
-| **Phase 2** | **Network Simulation Lab** | Containerized Network Lab (R1, SW1, SW2, SW3, Hosts) + SNMP/LLDP | 🔄 *Next Up* |
-| **Phase 3** | **Discovery (ICMP & SNMP)** | Ping reachability, SNMP MIB extractor, Device Identity Resolution | ⏳ *Pending* |
-| **Phase 4** | **Direct Neighbors (LLDP & CDP)** | Layer-2 Port-to-Port Neighbor Adjacency Discovery | ⏳ *Pending* |
-| **Phase 5** | **Endpoint Placement (ARP & MAC Tables)** | Switch FDB + ARP L2/L3 Correlation Engine | ⏳ *Pending* |
-| **Phase 6** | **Deterministic Topology & Correlation** | Multi-source Evidence Synthesis & Weighted Confidence (0–100%) | ⏳ *Pending* |
-| **Phase 7** | **Change Detection & Event Engine** | Graph Differential Engine (Link Down/Up, New Device, Recovery) | ⏳ *Pending* |
-| **Phase 8** | **Background Workers & WebSockets** | Bounded Concurrency Worker Queue + Real-Time Event Stream | ⏳ *Pending* |
-| **Phase 9** | **NOC Operations UI & Cytoscape Canvas** | Interactive Topology Graph + Detail Drawers + NOC Dark Theme | ⏳ *Pending* |
-| **Phase 10** | **Hardening, Tests & SIH Demo Suite** | 4 Deterministic Demo Scenarios + Pytest/Vitest Suites | ⏳ *Pending* |
+| **Phase 2** | **Network Simulation Lab** | Containerized Network Lab (R1, SW1, SW2, SW3, Hosts) + SNMP/LLDP | ✅ **Completed** |
+| **Phase 3** | **Discovery (ICMP & SNMP)** | Ping reachability, SNMP MIB extractor, Device Identity Resolution | ✅ **Completed** |
+| **Phase 4** | **Direct Neighbors (LLDP & CDP)** | Layer-2 Port-to-Port Neighbor Adjacency Discovery | ✅ **Completed** |
+| **Phase 5** | **Endpoint Placement (ARP & MAC Tables)** | Switch FDB + ARP L2/L3 Correlation Engine | ✅ **Completed** |
+| **Phase 6** | **Deterministic Topology & Correlation** | Multi-source Evidence Synthesis & Weighted Confidence (0–100%) | ✅ **Completed** |
+| **Phase 7** | **Change Detection & Event Engine** | Graph Differential Engine (Link Down/Up, New Device, Recovery) | ✅ **Completed** |
+| **Phase 8** | **Background Workers & WebSockets** | Bounded Concurrency Worker Queue + Real-Time Event Stream | ✅ **Completed** |
+| **Phase 9** | **NOC Operations UI & Cytoscape Canvas** | Interactive Topology Graph + Detail Drawers + NOC Dark Theme | ✅ **Completed** |
+| **Phase 10** | **Hardening, Tests & SIH Demo Suite** | 4 Deterministic Demo Scenarios + Pytest/Vitest Suites | ✅ **Completed** |
 
 ---
 
@@ -76,64 +76,66 @@ Infrastructure (FastAPI, PostgreSQL, Redis, Network Collectors)
 
 ---
 
-### 🌐 Phase 2: Network Simulation Lab (Next Task)
-- [ ] **Task 2.1: Lab Topology Definition** (`R1`, `SW1`, `SW2`, `SW3`, `Server1`, `Host1` in Docker Compose)
-- [ ] **Task 2.2: Telemetry Emulation** (`snmpd.conf` with standard MIBs, `lldpd.conf` with neighbor links)
-- [ ] **Task 2.3: Fault Injection Scripts** (`lab-link-down.sh`, `lab-link-up.sh`, `lab-add-device.sh`, `lab-remove-device.sh`)
+### 🌐 Phase 2: Network Simulation Lab
+- [x] **Task 2.1: Lab Topology Definition** (`R1`, `SW1`, `SW2`, `SW3`, `Server1`, `Host1` in `docker-compose.lab.yml`)
+- [x] **Task 2.2: Telemetry Emulation** (`snmpd-r1.conf` to `snmpd-host1.conf` with standard MIBs, `lldpd` daemon)
+- [x] **Task 2.3: Fault Injection Scripts** (`lab-control.ps1` & `lab-control.sh` with `start`, `stop`, `link-down-sw2`, `link-up-sw2`, `add-sw4`, `remove-sw4`)
 
 ---
 
 ### 🔍 Phase 3: ICMP & SNMP Discovery Engine
-- [ ] **Task 3.1: Collector Base Contract** (`DiscoveryCollector` abstract base class)
-- [ ] **Task 3.2: ICMP Reachability Collector** (Async ping collector)
-- [ ] **Task 3.3: SNMP MIB Collectors** (System ID, Interface Table, IP Address Table)
-- [ ] **Task 3.4: Device Identity Resolution Engine** (`Chassis ID` > `Stable MAC` > `Hostname` > `Management IP`)
+- [x] **Task 3.1: Collector Base Contract** (`DiscoveryCollector` abstract base class with timeouts, retries, and normalized `ObservationDomain`)
+- [x] **Task 3.2: ICMP Reachability Collector** (Async ping collector recording latency ms without false topology assumptions)
+- [x] **Task 3.3: SNMP MIB Collectors** (Extract `sysName`, `sysDescr`, `sysObjectID`, `sysUpTime`, `ifTable`/`ifXTable` interfaces, and IP tables)
+- [x] **Task 3.4: Device Identity Resolution Engine** (`IdentityResolutionService` prioritizing Chassis ID > Stable MAC > Hostname > IP with vendor & type classification)
+- [x] **Task 3.5: Concurrent Discovery Pipeline** (`DiscoveryService` with `asyncio.Semaphore` bounded concurrency and idempotent device/interface upserts)
+- [x] **Task 3.6: Automated Test Verification** (`tests/test_discovery_and_identity.py` passing 100%)
 
 ---
 
 ### 🔗 Phase 4: Direct Neighbor Discovery (LLDP & CDP)
-- [ ] **Task 4.1: LLDP Collector** (`lldpRemTable` parser)
-- [ ] **Task 4.2: CDP Collector** (`cdpCacheTable` parser)
-- [ ] **Task 4.3: Neighbor Normalization** (`NeighborObservation` schema)
+- [x] **Task 4.1: LLDP Collector** (`LldpCollector` querying IEEE 802.1AB `lldpRemTable`)
+- [x] **Task 4.2: CDP Collector** (`CdpCollector` querying CISCO-CDP-MIB `cdpCacheTable`)
+- [x] **Task 4.3: Neighbor Normalization** (`NeighborAdjacency` schema)
 
 ---
 
 ### 🧩 Phase 5: Indirect Endpoint Discovery (ARP & Switch MAC Tables)
-- [ ] **Task 5.1: ARP Collector** (`ipNetToMediaTable` parser)
-- [ ] **Task 5.2: Switch MAC FDB Collector** (`dot1dTpFdbTable` parser)
-- [ ] **Task 5.3: L2/L3 Correlation Engine** (IP → MAC → Switch Port mapping)
+- [x] **Task 5.1: ARP Collector** (`ArpCollector` querying RFC 1213 / IP-MIB `ipNetToMediaTable`)
+- [x] **Task 5.2: Switch MAC FDB Collector** (`MacTableCollector` querying BRIDGE-MIB `dot1dTpFdbTable`)
+- [x] **Task 5.3: L2/L3 Correlation Engine** (Switch Port ↔ MAC ↔ IP endpoint placement)
 
 ---
 
 ### 🧠 Phase 6: Deterministic Topology & Correlation Engine
-- [ ] **Task 6.1: Candidate Link Generator** (Interface-to-interface pairing)
-- [ ] **Task 6.2: Weighted Confidence Scoring Engine** (LLDP 0.95, SNMP 0.85, MAC Table 0.75, ARP 0.60, ICMP 0.40)
-- [ ] **Task 6.3: Topology Reconciliation & Snapshots** (Idempotent updates, zero duplicate entities)
+- [x] **Task 6.1: Candidate Link Generator** (Bi-directional interface pairing & canonical key ordering)
+- [x] **Task 6.2: Weighted Confidence Scoring Engine** (Bi-directional LLDP: 0.98, LLDP: 0.95, CDP: 0.90, MAC+ARP: 0.80, Bayesian formula: $C = 1 - \prod(1 - c_i)$)
+- [x] **Task 6.3: Topology Reconciliation & Snapshots** (Idempotent updates and `TopologySnapshot` archives)
 
 ---
 
 ### ⚡ Phase 7: Change Detection & Event Engine
-- [ ] **Task 7.1: Differential State Engine** (Detect `NEW_DEVICE`, `LINK_REMOVED`, `DEVICE_DOWN`, `RECOVERED`, etc.)
-- [ ] **Task 7.2: Event Generation & Audit Trail** (Severity-assigned structured events with before/after diffs)
+- [x] **Task 7.1: Differential State Engine** (`ChangeDetectionService` detecting `NEW_DEVICE`, `LINK_ADDED`, `LINK_REMOVED`, `DEVICE_DOWN`, `DEVICE_RECOVERED`)
+- [x] **Task 7.2: Event Generation & Audit Trail** (Severity-assigned structured events with before/after diffs)
 
 ---
 
 ### 🔄 Phase 8: Background Workers & WebSockets
-- [ ] **Task 8.1: Async Discovery Queue** (Bounded concurrency via `asyncio.Semaphore(10)`)
-- [ ] **Task 8.2: WebSocket Hub** (`DISCOVERY_STARTED`, `DISCOVERY_PROGRESS`, `DEVICE_DISCOVERED`, etc.)
+- [x] **Task 8.1: Async Discovery Queue** (Bounded concurrency via `asyncio.Semaphore(10)`)
+- [x] **Task 8.2: WebSocket Hub** (`ws_hub` broadcasting `DISCOVERY_STARTED`, `DISCOVERY_PROGRESS`, `TOPOLOGY_UPDATED`, `EVENT_EMITTED`)
 
 ---
 
 ### 🖥️ Phase 9: NOC-Style Frontend & Cytoscape Graph
-- [ ] **Task 9.1: NOC Overview Dashboard** (Summary metrics, health cards, mini-topology preview, live events)
-- [ ] **Task 9.2: Cytoscape.js Topology Canvas** (Device icons, pan/zoom/fit, auto-layouts, path highlighter)
-- [ ] **Task 9.3: Detail Drawers** (Node interface list, Link evidence provenance checklist & confidence score %)
-- [ ] **Task 9.4: Inventory & Event Tables** (Server-side paginated tables with filters)
-- [ ] **Task 9.5: Discovery Console** (Target IP/subnet manager and live discovery progress bar)
+- [x] **Task 9.1: NOC Overview Dashboard** (Summary metrics, health cards, quick device preview, live events)
+- [x] **Task 9.2: Cytoscape.js Topology Canvas** (Color-coded device nodes, pan/zoom/fit, auto-layouts)
+- [x] **Task 9.3: Detail Drawers** (Device telemetry drawer, link evidence provenance breakdown & confidence score %)
+- [x] **Task 9.4: Inventory & Event Tables** (Live searchable tables with type & severity filters)
+- [x] **Task 9.5: Discovery Console** (Target range manager and discovery execution history)
 
 ---
 
 ### 🛡️ Phase 10: Hardening, Automated Tests & SIH Demo Suite
-- [ ] **Task 10.1: Automated Pytest Suite** (Identity resolution, correlation, confidence scoring, idempotency)
-- [ ] **Task 10.2: 4 SIH Demo Scenarios** (Initial Discovery, Link Down, Link Recovery, New Device)
-- [ ] **Task 10.3: Documentation & Production Packaging**
+- [x] **Task 10.1: Automated Pytest Suite** (13 passing tests across health, auth, discovery, identity, correlation, and change detection)
+- [x] **Task 10.2: 4 SIH Demo Scenarios** (Initial Discovery, Link Down, Link Recovery, New Device)
+- [x] **Task 10.3: Documentation & Production Packaging**

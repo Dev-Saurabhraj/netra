@@ -73,3 +73,38 @@ async def test_auth_login_and_me(client: AsyncClient, db_session: AsyncSession):
     assert me_data["email"] == "operator@netra.local"
     assert me_data["role"] == "OPERATOR"
 
+
+@pytest.mark.asyncio
+async def test_event_search_filter(client: AsyncClient, db_session):
+    """Verify GET /events?search=... keyword filtering on title and description."""
+    from app.infrastructure.database.models import Event, User, UserRole
+    from app.domain.entities.event import EventSeverity, EventType
+    from app.core.security import create_access_token
+
+    user = User(email="auditor@netra.local", hashed_password="pw", full_name="Auditor", role=UserRole.VIEWER, is_active=True)
+    db_session.add(user)
+    await db_session.flush()
+
+    ev1 = Event(event_type=EventType.NEW_DEVICE, severity=EventSeverity.INFO, title="New Switch Added: SW99", description="Switch at 10.0.0.99 added")
+    ev2 = Event(event_type=EventType.DEVICE_DOWN, severity=EventSeverity.CRITICAL, title="Link Failure on Core Router", description="BGP neighbor dropped")
+    db_session.add_all([ev1, ev2])
+    await db_session.commit()
+
+    token = create_access_token(subject=user.id)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Search for "Switch"
+    resp = await client.get("/api/v1/events?search=Switch", headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert len(data) == 1
+    assert data[0]["title"] == "New Switch Added: SW99"
+
+    # Search for "BGP"
+    resp_bgp = await client.get("/api/v1/events?search=BGP", headers=headers)
+    assert resp_bgp.status_code == 200
+    data_bgp = resp_bgp.json()["data"]
+    assert len(data_bgp) == 1
+    assert data_bgp[0]["title"] == "Link Failure on Core Router"
+
+

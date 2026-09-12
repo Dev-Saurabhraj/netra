@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, APIRouter, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
@@ -50,9 +50,14 @@ async def lifespan(app: FastAPI):
             await session.commit()
             logger.info(f"Default admin user created: {settings.FIRST_SUPERUSER_EMAIL}")
 
+    # Start Discovery Scheduler service
+    from app.application.services.scheduler_service import scheduler
+    scheduler.start()
+
     yield
 
     logger.info(f"Shutting down {settings.PROJECT_NAME}...")
+    await scheduler.stop()
     await engine.dispose()
 
 
@@ -94,7 +99,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 
 # Mount API V1 Routers
-api_v1 = FastAPI()
+api_v1 = APIRouter(prefix=settings.API_V1_STR)
 api_v1.include_router(health_router)
 api_v1.include_router(auth_router)
 api_v1.include_router(devices_router)
@@ -103,7 +108,7 @@ api_v1.include_router(topology_router)
 api_v1.include_router(events_router)
 api_v1.include_router(discovery_router)
 
-app.mount(settings.API_V1_STR, api_v1)
+app.include_router(api_v1)
 
 
 @app.get("/")

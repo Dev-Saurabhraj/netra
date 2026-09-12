@@ -1,0 +1,88 @@
+services:
+  lab-r1:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+    container_name: netra-lab-r1
+    hostname: R1-CoreRouter
+    volumes:
+      - ./configs/snmpd-r1.conf:/etc/snmp/snmpd.conf:ro
+    networks:
+      netra_lab_net:
+        ipv4_address: 192.168.100.1
+    restart: unless-stopped
+
+  lab-sw1:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+    container_name: netra-lab-sw1
+    hostname: SW1-DistSwitch
+    volumes:
+      - ./configs/snmpd-sw1.conf:/etc/snmp/snmpd.conf:ro
+    networks:
+      netra_lab_net:
+        ipv4_address: 192.168.100.2
+    restart: unless-stopped
+
+  lab-sw2:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+    container_name: netra-lab-sw2
+    hostname: SW2-AccessSwitch1
+    volumes:
+      - ./configs/snmpd-sw2.conf:/etc/snmp/snmpd.conf:ro
+    networks:
+      netra_lab_net:
+        ipv4_address: 192.168.100.3
+    restart: unless-stopped
+
+  lab-sw3:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+    container_name: netra-lab-sw3
+    hostname: SW3-AccessSwitch2
+    volumes:
+      - ./configs/snmpd-sw3.conf:/etc/snmp/snmpd.conf:ro
+    networks:
+      netra_lab_net:
+        ipv4_address: 192.168.100.4
+    restart: unless-stopped
+
+  lab-server1:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+    container_name: netra-lab-server1
+    hostname: Server1-ProdApp
+    volumes:
+      - ./configs/snmpd-server1.conf:/etc/snmp/snmpd.conf:ro
+    networks:
+      netra_lab_net:
+        ipv4_address: 192.168.100.10
+    restart: unless-stopped
+
+  lab-host1:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+    container_name: netra-lab-host1
+    hostname: Host1-Workstation
+    volumes:
+      - ./configs/snmpd-host1.conf:/etc/snmp/snmpd.conf:ro
+    networks:
+      netra_lab_net:
+        ipv4_address: 192.168.100.20
+    restart: unless-stopped
+
+networks:
+  netra_lab_net:
+    name: netra_lab_net
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.100.0/24
+          gateway: 192.168.100.254
+

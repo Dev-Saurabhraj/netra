@@ -53,6 +53,9 @@ services:
         condition: service_healthy
     volumes:
       - ./backend:/app
+    networks:
+      - default
+      - netra_lab_net
 
   frontend:
     build:
@@ -68,4 +71,9 @@ services:
 volumes:
   postgres_data:
   redis_data:
+
+networks:
+  default:
+  netra_lab_net:
+    external: true
 

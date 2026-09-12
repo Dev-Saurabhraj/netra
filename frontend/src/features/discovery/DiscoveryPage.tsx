@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Compass, Play, Plus, CheckCircle2, Clock, AlertCircle, Trash2 } from 'lucide-react';
+import { Play, Plus, Clock, Trash2, Calendar, CheckCircle, PauseCircle } from 'lucide-react';
 import { apiClient } from '../../lib/api';
 
 export const DiscoveryPage: React.FC = () => {
@@ -10,16 +10,32 @@ export const DiscoveryPage: React.FC = () => {
   const [targetType, setTargetType] = useState('IP');
 
   // Fetch targets
-  const { data: targetsRes, isLoading: loadingTargets } = useQuery({
+  const { data: targetsRes } = useQuery({
     queryKey: ['targets'],
     queryFn: () => apiClient.get('/targets').then((r) => r.data.data),
   });
 
   // Fetch discovery runs
-  const { data: runsRes, isLoading: loadingRuns } = useQuery({
+  const { data: runsRes } = useQuery({
     queryKey: ['discovery-runs'],
     queryFn: () => apiClient.get('/discovery/runs').then((r) => r.data.data),
-    refetchInterval: 3000, // Poll every 3 seconds for active runs
+    refetchInterval: 3000,
+  });
+
+  // Fetch scheduler status
+  const { data: scheduleRes } = useQuery({
+    queryKey: ['discovery-schedule'],
+    queryFn: () => apiClient.get('/discovery/schedule').then((r) => r.data.data),
+    refetchInterval: 4000,
+  });
+
+  // Update Scheduler Mutation
+  const updateScheduleMutation = useMutation({
+    mutationFn: (newCfg: { enabled: boolean; interval_seconds?: number }) =>
+      apiClient.post('/discovery/schedule', newCfg),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['discovery-schedule'] });
+    },
   });
 
   // Add Target Mutation
@@ -63,6 +79,7 @@ export const DiscoveryPage: React.FC = () => {
 
   const targets = targetsRes || [];
   const runs = runsRes || [];
+  const schedule = scheduleRes || { enabled: false, interval_seconds: 60 };
 
   return (
     <div className="space-y-6">
@@ -70,7 +87,9 @@ export const DiscoveryPage: React.FC = () => {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-white tracking-wide">Discovery Management Console</h1>
-          <p className="text-xs text-slate-400 mt-0.5">Configure IP/Subnet discovery targets and trigger multi-source discovery cycles</p>
+          <p className="text-xs text-slate-400 mt-0.5">
+            Configure IP/Subnet targets, automated polling cadences, and trigger multi-source discovery cycles
+          </p>
         </div>
         <button
           onClick={() => startDiscoveryMutation.mutate()}
@@ -83,8 +102,90 @@ export const DiscoveryPage: React.FC = () => {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left Column: Target Configuration & Add Target */}
+        {/* Left Column: Schedule & Target Configuration */}
         <div className="space-y-6">
+          {/* Automated Discovery Scheduler Card */}
+          <div className="bg-surface-200 border border-border-subtle rounded-xl p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+                <Calendar className="w-4 h-4 text-accent-cyan" /> Automated Polling Schedule
+              </h2>
+              <button
+                onClick={() =>
+                  updateScheduleMutation.mutate({
+                    enabled: !schedule.enabled,
+                    interval_seconds: schedule.interval_seconds,
+                  })
+                }
+                disabled={updateScheduleMutation.isPending}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-mono font-semibold transition ${
+                  schedule.enabled
+                    ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                    : 'bg-slate-700/40 text-slate-400 border border-slate-600/30'
+                }`}
+              >
+                {schedule.enabled ? (
+                  <>
+                    <CheckCircle className="w-3 h-3 text-emerald-400" />
+                    <span>Enabled</span>
+                  </>
+                ) : (
+                  <>
+                    <PauseCircle className="w-3 h-3 text-slate-400" />
+                    <span>Disabled</span>
+                  </>
+                )}
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-[11px] font-mono text-slate-400">Polling Interval</label>
+              <div className="grid grid-cols-4 gap-1.5">
+                {[30, 60, 120, 300].map((sec) => (
+                  <button
+                    key={sec}
+                    type="button"
+                    onClick={() =>
+                      updateScheduleMutation.mutate({
+                        enabled: schedule.enabled,
+                        interval_seconds: sec,
+                      })
+                    }
+                    className={`py-1.5 text-xs font-mono rounded-lg border transition ${
+                      schedule.interval_seconds === sec
+                        ? 'bg-accent-cyan/15 text-accent-cyan border-accent-cyan/50 font-bold'
+                        : 'bg-surface-300 text-slate-400 border-border-subtle hover:text-slate-200'
+                    }`}
+                  >
+                    {sec < 60 ? `${sec}s` : `${sec / 60}m`}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="bg-surface-300 p-2.5 rounded-lg border border-border-subtle space-y-1.5 text-[11px] font-mono">
+              <div className="flex justify-between text-slate-400">
+                <span>Scheduler Status:</span>
+                <span className={schedule.is_running ? 'text-accent-cyan animate-pulse font-bold' : schedule.enabled ? 'text-emerald-400' : 'text-slate-500'}>
+                  {schedule.is_running ? 'DISCOVERY IN PROGRESS' : schedule.enabled ? 'ACTIVE (Awaiting tick)' : 'PAUSED'}
+                </span>
+              </div>
+              {schedule.next_run_at && schedule.enabled && (
+                <div className="flex justify-between text-slate-400">
+                  <span>Next Scheduled Run:</span>
+                  <span className="text-slate-200">{new Date(schedule.next_run_at).toLocaleTimeString()}</span>
+                </div>
+              )}
+              {schedule.last_run_at && (
+                <div className="flex justify-between text-slate-400">
+                  <span>Last Run Completed:</span>
+                  <span className="text-slate-200">{new Date(schedule.last_run_at).toLocaleTimeString()}</span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Add Target Range */}
           <div className="bg-surface-200 border border-border-subtle rounded-xl p-5">
             <h2 className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
               <Plus className="w-4 h-4 text-accent-cyan" /> Add Target Range
@@ -169,7 +270,7 @@ export const DiscoveryPage: React.FC = () => {
           <h2 className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
             <Clock className="w-4 h-4 text-accent-blue" /> Discovery Execution History
           </h2>
-          <div className="space-y-3 max-h-[500px] overflow-y-auto">
+          <div className="space-y-3 max-h-[560px] overflow-y-auto">
             {runs.length === 0 ? (
               <div className="p-8 text-center text-xs text-slate-500 font-mono">
                 No discovery cycles executed yet. Click "Start Discovery Cycle" above.
@@ -220,4 +321,3 @@ export const DiscoveryPage: React.FC = () => {
     </div>
   );
 };
-

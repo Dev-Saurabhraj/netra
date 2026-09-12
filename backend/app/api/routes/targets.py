@@ -13,15 +13,15 @@ router = APIRouter(prefix="/targets", tags=["Discovery Targets"])
 
 
 class CreateTargetRequest(BaseModel):
-    name: str = Field(..., example="Core Network Subnet")
-    target_type: TargetType = Field(default=TargetType.IP, example="CIDR")
-    target_value: str = Field(..., example="10.0.0.0/24")
+    name: str = Field(..., json_schema_extra={"example": "Core Network Subnet"})
+    target_type: TargetType = Field(default=TargetType.IP, json_schema_extra={"example": "CIDR"})
+    target_value: str = Field(..., json_schema_extra={"example": "10.0.0.0/24"})
     credential_id: Optional[str] = None
     is_enabled: bool = True
 
 
 class CreateCredentialRequest(BaseModel):
-    name: str = Field(..., example="Standard SNMPv2c")
+    name: str = Field(..., json_schema_extra={"example": "Standard SNMPv2c"})
     cred_type: CredentialType = Field(default=CredentialType.SNMP_V2C)
     community: Optional[str] = "public"
     username: Optional[str] = None
