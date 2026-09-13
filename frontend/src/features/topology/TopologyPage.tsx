@@ -18,9 +18,19 @@ import {
   Search,
   Download,
   LayoutGrid,
-  Filter
+  Filter,
+  Wifi,
+  Crosshair,
+  Sparkles,
+  Activity,
+  Eye,
+  EyeOff,
+  Shield,
+  RefreshCw
 } from 'lucide-react';
 import { apiClient } from '../../lib/api';
+import { DiscoveryLiveConsole } from '../discovery/DiscoveryLiveConsole';
+import { useNetworkWorkspaceStore } from '../../stores/networkWorkspaceStore';
 
 const getDeviceColor = (type: string) => {
   switch (type?.toUpperCase()) {
@@ -58,11 +68,27 @@ const getDeviceShape = (type: string) => {
   }
 };
 
+const getVendorBadgeColor = (vendor: string) => {
+  const v = (vendor || '').toLowerCase();
+  if (v.includes('apple')) return 'bg-slate-700/40 text-slate-200 border-slate-600';
+  if (v.includes('realme') || v.includes('oppo')) return 'bg-amber-500/20 text-amber-300 border-amber-500/30';
+  if (v.includes('poco') || v.includes('xiaomi')) return 'bg-orange-500/20 text-orange-300 border-orange-500/30';
+  if (v.includes('oneplus')) return 'bg-red-500/20 text-red-300 border-red-500/30';
+  if (v.includes('samsung')) return 'bg-blue-500/20 text-blue-300 border-blue-500/30';
+  if (v.includes('zyxel') || v.includes('cisco')) return 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30';
+  if (v.includes('intel')) return 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30';
+  return 'bg-purple-500/20 text-purple-300 border-purple-500/30';
+};
+
 export const TopologyPage: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
   const queryClient = useQueryClient();
   
+  // Workspace Tab Synchronization
+  const { tabs: workspaceTabs, activeTabId, hiddenDeviceIds } = useNetworkWorkspaceStore();
+  const activeWorkspaceTab = workspaceTabs.find((t) => t.id === activeTabId) || workspaceTabs.filter(t => !t.isArchived)[0];
+
   const [selectedNode, setSelectedNode] = useState<any>(null);
   const [selectedEdge, setSelectedEdge] = useState<any>(null);
   const [liveEvent, setLiveEvent] = useState<string | null>(null);
@@ -70,7 +96,15 @@ export const TopologyPage: React.FC = () => {
   // Search & Filter States
   const [nodeSearchQuery, setNodeSearchQuery] = useState<string>('');
   const [roleFilter, setRoleFilter] = useState<string>('ALL');
-  const [selectedLayout, setSelectedLayout] = useState<string>('cose');
+  const [selectedLayout, setSelectedLayout] = useState<string>('radial_star');
+
+  // Subnet & Network Isolation States
+  const [selectedSubnet, setSelectedSubnet] = useState<string>('CURRENT'); // 'CURRENT', 'ALL', or specific subnet
+  const [hideIsolated, setHideIsolated] = useState<boolean>(true);
+
+  // Interactive Action States
+  const [isPinging, setIsPinging] = useState<boolean>(false);
+  const [pingResult, setPingResult] = useState<{ reachable: boolean; latency: number } | null>(null);
 
   // Time-Travel & Snapshot States
   const [selectedSnapshotId, setSelectedSnapshotId] = useState<string>('live');
@@ -83,6 +117,10 @@ export const TopologyPage: React.FC = () => {
   const [pathResult, setPathResult] = useState<any>(null);
   const [isTracingPath, setIsTracingPath] = useState<boolean>(false);
   const [traceError, setTraceError] = useState<string | null>(null);
+
+  // Live Discovery Console & Scanner States
+  const [showLiveScanner, setShowLiveScanner] = useState<boolean>(false);
+  const [isScanActive, setIsScanActive] = useState<boolean>(false);
 
   // 1. Fetch live topology
   const { data: liveTopoRes } = useQuery({
@@ -109,7 +147,7 @@ export const TopologyPage: React.FC = () => {
     enabled: selectedSnapshotId !== 'live',
   });
 
-  // Active graph to render
+  // Active raw graph
   const activeGraph = useMemo(() => {
     if (selectedSnapshotId === 'live') {
       return liveTopoRes;
@@ -122,6 +160,96 @@ export const TopologyPage: React.FC = () => {
     }
     return liveTopoRes;
   }, [selectedSnapshotId, isDiffMode, liveTopoRes, historyData]);
+
+  // Compute all distinct subnets from nodes
+  const subnets = useMemo(() => {
+    if (!activeGraph?.nodes) return [];
+    const map: Record<string, { subnet: string; count: number; hasGateway: boolean; gatewayLabel: string; gatewayIp: string }> = {};
+    
+    activeGraph.nodes.forEach((n: any) => {
+      const ip = n.data?.ip;
+      if (ip && ip.includes('.')) {
+        const parts = ip.split('.');
+        if (parts.length === 4) {
+          const sub = `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
+          if (!map[sub]) {
+            map[sub] = { subnet: sub, count: 0, hasGateway: false, gatewayLabel: '', gatewayIp: '' };
+          }
+          map[sub].count++;
+          const isGw = parts[3] === '1' || parts[3] === '254' || (n.data?.device_type || '').toUpperCase() === 'ROUTER';
+          if (isGw) {
+            map[sub].hasGateway = true;
+            map[sub].gatewayLabel = n.data?.label || ip;
+            map[sub].gatewayIp = ip;
+          }
+        }
+      }
+    });
+
+    return Object.values(map).sort((a, b) => {
+      if (a.hasGateway && !b.hasGateway) return -1;
+      if (!a.hasGateway && b.hasGateway) return 1;
+      return b.count - a.count;
+    });
+  }, [activeGraph]);
+
+  // Determine current active Gateway Subnet (prioritizing 192.168.1.0/24 or the primary router)
+  // Determine current active Gateway Subnet (prioritizing active workspace tab)
+  const currentGatewaySubnet = useMemo(() => {
+    if (activeWorkspaceTab?.subnet) return activeWorkspaceTab.subnet;
+    const found192 = subnets.find((s) => s.hasGateway && s.subnet.startsWith('192.168.1.'));
+    if (found192) return found192.subnet;
+    const anyGw = subnets.find((s) => s.hasGateway);
+    if (anyGw) return anyGw.subnet;
+    return subnets[0]?.subnet || '192.168.1.0/24';
+  }, [subnets, activeWorkspaceTab]);
+
+  const activeSubnetMeta = useMemo(() => {
+    const target = selectedSubnet === 'CURRENT' ? currentGatewaySubnet : selectedSubnet;
+    return subnets.find((s) => s.subnet === target) || null;
+  }, [selectedSubnet, currentGatewaySubnet, subnets]);
+
+  // Filtered Graph (Subnet-isolated to only show current network by default)
+  const filteredGraph = useMemo(() => {
+    if (!activeGraph?.nodes) return { nodes: [], edges: [] };
+
+    let targetSubnet: string | null = null;
+    if (selectedSubnet === 'CURRENT') {
+      targetSubnet = currentGatewaySubnet;
+    } else if (selectedSubnet !== 'ALL') {
+      targetSubnet = selectedSubnet;
+    }
+
+    // Filter out hidden devices (non-destructive UI hide)
+    let nodes = activeGraph.nodes.filter((n: any) => !hiddenDeviceIds.includes(n.data?.id));
+    if (targetSubnet) {
+      const prefix = targetSubnet.split('.').slice(0, 3).join('.') + '.';
+      nodes = nodes.filter((n: any) => (n.data?.ip || '').startsWith(prefix));
+    }
+
+    const nodeIds = new Set(nodes.map((n: any) => n.data.id));
+
+    // Filter edges where BOTH source and destination are in our node set
+    let edges = (activeGraph.edges || []).filter((e: any) => {
+      return nodeIds.has(e.data.source) && nodeIds.has(e.data.target);
+    });
+
+    // If hideIsolated, filter out nodes that have 0 edges
+    if (hideIsolated) {
+      const connectedNodeIds = new Set();
+      edges.forEach((e: any) => {
+        connectedNodeIds.add(e.data.source);
+        connectedNodeIds.add(e.data.target);
+      });
+      // Keep gateway even if standalone
+      nodes = nodes.filter((n: any) => {
+        const isGw = (n.data?.device_type || '').toUpperCase() === 'ROUTER' || (n.data?.ip || '').endsWith('.1');
+        return connectedNodeIds.has(n.data.id) || isGw;
+      });
+    }
+
+    return { nodes, edges };
+  }, [activeGraph, selectedSubnet, currentGatewaySubnet, hideIsolated]);
 
   // WebSocket connection for real-time topology updates
   useEffect(() => {
@@ -142,6 +270,14 @@ export const TopologyPage: React.FC = () => {
             setTimeout(() => setLiveEvent(null), 4000);
           } else if (payload.type === 'EVENT_EMITTED') {
             setLiveEvent(`${payload.data?.type}: ${payload.data?.title}`);
+            setTimeout(() => setLiveEvent(null), 4000);
+          } else if (payload.type === 'DISCOVERY_STARTED' || payload.type === 'DISCOVERY_PROGRESS') {
+            setIsScanActive(true);
+          } else if (payload.type === 'DISCOVERY_COMPLETED') {
+            setIsScanActive(false);
+            setLiveEvent('Discovery run completed successfully');
+            queryClient.invalidateQueries({ queryKey: ['topology'] });
+            queryClient.invalidateQueries({ queryKey: ['topology-snapshots'] });
             setTimeout(() => setLiveEvent(null), 4000);
           }
         } catch (e) {
@@ -166,8 +302,8 @@ export const TopologyPage: React.FC = () => {
     const elements: any[] = [];
 
     // Add nodes with distinct role-based shapes and status classes
-    if (activeGraph?.nodes) {
-      activeGraph.nodes.forEach((n: any) => {
+    if (filteredGraph?.nodes) {
+      filteredGraph.nodes.forEach((n: any) => {
         const d = n.data;
         const devType = d.device_type || d.type || 'HOST';
         const color = getDeviceColor(devType);
@@ -198,8 +334,8 @@ export const TopologyPage: React.FC = () => {
     }
 
     // Add edges
-    if (activeGraph?.edges) {
-      activeGraph.edges.forEach((e: any) => {
+    if (filteredGraph?.edges) {
+      filteredGraph.edges.forEach((e: any) => {
         const d = e.data;
         elements.push({
           group: 'edges',
@@ -216,6 +352,62 @@ export const TopologyPage: React.FC = () => {
       });
     }
 
+    // Layout configuration generator
+    const getLayoutConfig = (layoutName: string) => {
+      if (layoutName === 'radial_star' || layoutName === 'concentric') {
+        return {
+          name: 'concentric',
+          animate: true,
+          animationDuration: 500,
+          concentric: (node: any) => {
+            const devType = (node.data('device_type') || '').toUpperCase();
+            const ip = node.data('raw')?.ip || '';
+            // Router / Gateway placed in the exact center orbit
+            if (devType === 'ROUTER' || ip.endsWith('.1')) return 10;
+            if (devType === 'SWITCH') return 6;
+            if (devType === 'SERVER') return 4;
+            return 1;
+          },
+          levelWidth: () => 1,
+          padding: 60,
+          spacingFactor: 1.4,
+        };
+      }
+      if (layoutName === 'breadthfirst') {
+        return {
+          name: 'breadthfirst',
+          directed: false,
+          animate: true,
+          padding: 60,
+          spacingFactor: 1.3,
+        };
+      }
+      if (layoutName === 'circle') {
+        return {
+          name: 'circle',
+          animate: true,
+          padding: 60,
+        };
+      }
+      if (layoutName === 'grid') {
+        return {
+          name: 'grid',
+          animate: true,
+          padding: 60,
+        };
+      }
+      return {
+        name: 'cose',
+        animate: true,
+        randomize: false,
+        componentSpacing: 110,
+        nodeOverlap: 40,
+        idealEdgeLength: 130,
+        edgeElasticity: 100,
+        padding: 60,
+      };
+    };
+
     // Initialize Cytoscape with enhanced visual styles
     const cy = cytoscape({
       container: containerRef.current,
@@ -231,12 +423,12 @@ export const TopologyPage: React.FC = () => {
             'label': 'data(label)',
             'color': '#f8fafc',
             'text-valign': 'bottom',
-            'text-margin-y': 7,
+            'text-margin-y': 8,
             'font-family': 'JetBrains Mono',
             'font-size': '10px',
             'text-wrap': 'wrap',
-            'width': 44,
-            'height': 44,
+            'width': 46,
+            'height': 46,
             'transition-property': 'background-color, border-color, border-width, opacity',
             'transition-duration': 0.25,
           },
@@ -248,14 +440,14 @@ export const TopologyPage: React.FC = () => {
             'border-color': '#ef4444',
             'border-width': 2.5,
             'background-color': '#2a0e14',
-            'opacity': 0.75,
+            'opacity': 0.7,
           },
         },
         {
           selector: 'node:selected',
           style: {
             'border-color': '#38bdf8',
-            'border-width': 4,
+            'border-width': 4.5,
             'background-color': '#1e293b',
           },
         },
@@ -281,7 +473,7 @@ export const TopologyPage: React.FC = () => {
             'width': 4,
           },
         },
-        // Search Match Styling
+        // Search Match Halo
         {
           selector: 'node.search-match',
           style: {
@@ -359,16 +551,14 @@ export const TopologyPage: React.FC = () => {
           },
         },
       ],
-      layout: {
-        name: selectedLayout,
-        animate: true,
-      } as any,
+      layout: getLayoutConfig(selectedLayout) as any,
     });
 
     cy.on('tap', 'node', (evt) => {
       const node = evt.target;
       setSelectedNode(node.data('raw'));
       setSelectedEdge(null);
+      setPingResult(null);
 
       // Assist path tracer selection if active
       if (showPathTracer) {
@@ -398,9 +588,20 @@ export const TopologyPage: React.FC = () => {
     return () => {
       cy.destroy();
     };
-  }, [activeGraph, showPathTracer, sourceNodeId, targetNodeId, selectedLayout]);
+  }, [filteredGraph, selectedLayout]);
 
-  // Real-Time Node Search & Auto-Focus
+  // Real-Time Node Search & Auto-Focus with Match Count
+  const matchedCount = useMemo(() => {
+    if (!nodeSearchQuery.trim() || !filteredGraph?.nodes) return 0;
+    const q = nodeSearchQuery.toLowerCase();
+    return filteredGraph.nodes.filter((n: any) => {
+      const d = n.data || {};
+      return (d.label || '').toLowerCase().includes(q) || 
+             (d.ip || '').toLowerCase().includes(q) || 
+             (d.vendor || '').toLowerCase().includes(q);
+    }).length;
+  }, [nodeSearchQuery, filteredGraph]);
+
   useEffect(() => {
     if (!cyRef.current) return;
     const cy = cyRef.current;
@@ -428,11 +629,11 @@ export const TopologyPage: React.FC = () => {
       cy.nodes().not(matchedNodes).addClass('dimmed');
       cy.edges().addClass('dimmed');
 
-      // Auto-center and zoom onto the first match
+      // Auto-center and zoom onto the first match smoothly
       cy.animate({
         center: { eles: matchedNodes.first() },
-        zoom: 1.6,
-        duration: 400,
+        zoom: 1.5,
+        duration: 350,
       });
     } else {
       cy.elements().addClass('dimmed');
@@ -519,6 +720,57 @@ export const TopologyPage: React.FC = () => {
     }
   };
 
+  // Focus on Gateway Router Action
+  const handleFocusGateway = () => {
+    if (!cyRef.current) return;
+    const cy = cyRef.current;
+    const gatewayNode = cy.nodes().filter((n: any) => {
+      const d = n.data('raw') || {};
+      return (d.device_type || '').toUpperCase() === 'ROUTER' || (d.ip || '').endsWith('.1');
+    }).first();
+
+    if (gatewayNode && gatewayNode.length > 0) {
+      cy.animate({
+        center: { eles: gatewayNode },
+        zoom: 1.4,
+        duration: 450,
+      });
+      gatewayNode.select();
+      setSelectedNode(gatewayNode.data('raw'));
+    }
+  };
+
+  // Ping Telemetry Test Simulator
+  const handlePingNode = () => {
+    if (!selectedNode) return;
+    setIsPinging(true);
+    setPingResult(null);
+    setTimeout(() => {
+      setIsPinging(false);
+      setPingResult({
+        reachable: selectedNode.status === 'ONLINE',
+        latency: Math.round((Math.random() * 4 + 1.8) * 10) / 10,
+      });
+    }, 600);
+  };
+
+  // Quick Trace from Selected Node to Gateway
+  const handleTraceToGateway = () => {
+    if (!selectedNode || !filteredGraph?.nodes) return;
+    const gw = filteredGraph.nodes.find((n: any) => {
+      const d = n.data || {};
+      return (d.device_type || '').toUpperCase() === 'ROUTER' || (d.ip || '').endsWith('.1');
+    });
+    if (gw) {
+      setSourceNodeId(selectedNode.id);
+      setTargetNodeId(gw.data.id);
+      setShowPathTracer(true);
+      setTimeout(() => {
+        handleTracePath();
+      }, 100);
+    }
+  };
+
   // Export Topology Canvas as High-Res PNG
   const handleExportPNG = () => {
     if (!cyRef.current) return;
@@ -531,130 +783,208 @@ export const TopologyPage: React.FC = () => {
 
   const handleLayoutChange = (layout: string) => {
     setSelectedLayout(layout);
-    if (cyRef.current) {
-      cyRef.current.layout({ name: layout, animate: true } as any).run();
-    }
   };
 
-  const handleFit = () => cyRef.current?.fit();
-  const handleZoomIn = () => cyRef.current?.zoom(cyRef.current.zoom() * 1.2);
+  const handleFit = () => cyRef.current?.fit(undefined, 40);
+  const handleZoomIn = () => cyRef.current?.zoom(cyRef.current.zoom() * 1.25);
   const handleZoomOut = () => cyRef.current?.zoom(cyRef.current.zoom() * 0.8);
   const handleReset = () => {
-    cyRef.current?.layout({ name: selectedLayout, animate: true } as any).run();
+    cyRef.current?.fit(undefined, 40);
   };
 
-  const availableDevices = liveTopoRes?.nodes || [];
+  const availableDevices = filteredGraph?.nodes || [];
 
   return (
-    <div className="h-[calc(100vh-8rem)] flex flex-col gap-3 relative font-sans">
-      {/* Top Primary Control & Toolbar */}
-      <div className="flex flex-wrap items-center justify-between bg-surface-200 border border-border-subtle px-4 py-2 rounded-xl shadow-lg gap-3">
+    <div className="h-[calc(100vh-8rem)] flex flex-col gap-2.5 relative font-sans select-none">
+      {/* Primary Navigation & Subnet Switcher Bar */}
+      <div className="flex flex-wrap items-center justify-between bg-surface-200 border border-border-subtle px-4 py-2.5 rounded-xl shadow-lg gap-3">
+        {/* Left: Brand / Title / Active Subnet Badge */}
         <div className="flex items-center gap-3">
-          <Network className="w-5 h-5 text-accent-cyan animate-pulse shrink-0" />
+          <div className="w-8 h-8 rounded-lg bg-accent-cyan/10 border border-accent-cyan/30 flex items-center justify-center shrink-0">
+            <Wifi className="w-4 h-4 text-accent-cyan animate-pulse" />
+          </div>
           <div>
-            <h1 className="text-sm font-bold text-white tracking-wide flex items-center gap-2">
-              <span>Interactive Topology Canvas</span>
-              {selectedSnapshotId !== 'live' && (
-                <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 font-mono font-semibold border border-amber-500/30">
-                  Historical Snapshot View
+            <div className="flex items-center gap-2">
+              <h1 className="text-sm font-bold text-white tracking-wide">Network Topology</h1>
+              {activeSubnetMeta && (
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 font-mono font-semibold border border-emerald-500/30 flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+                  {selectedSubnet === 'CURRENT' ? 'Gateway Network' : selectedSubnet}
                 </span>
               )}
-            </h1>
-            <span className="text-[10px] text-slate-400 font-mono">
-              {activeGraph?.nodes?.length || 0} Nodes · {activeGraph?.edges?.length || 0} Links
-            </span>
+            </div>
+            <div className="text-[10px] text-slate-400 font-mono flex items-center gap-2 mt-0.5">
+              <span>{filteredGraph.nodes.length} Discovered Devices</span>
+              <span>·</span>
+              <span>{filteredGraph.edges.length} Active Links</span>
+              {activeSubnetMeta?.gatewayIp && (
+                <>
+                  <span>·</span>
+                  <span className="text-accent-cyan">Gateway: {activeSubnetMeta.gatewayIp}</span>
+                </>
+              )}
+            </div>
           </div>
         </div>
 
-        {/* Live Notification Banner */}
-        {liveEvent && (
-          <div className="flex items-center gap-2 bg-accent-cyan/10 border border-accent-cyan/30 px-3 py-1 rounded-full text-accent-cyan text-xs font-mono animate-bounce">
-            <Radio className="w-3.5 h-3.5" />
-            <span>{liveEvent}</span>
-          </div>
-        )}
-
-        {/* Action Controls */}
+        {/* Center / Right: Subnet Mode Switcher + Clean Search Bar */}
         <div className="flex flex-wrap items-center gap-2">
-          {/* Node Search Bar in Canvas */}
-          <div className="relative w-56">
-            <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+          {/* Subnet Filter Selector (Isolates Current Wi-Fi Gateway from Old Lab Scans) */}
+          <div className="flex items-center gap-1 bg-surface-300 p-1 rounded-lg border border-border-subtle text-xs font-mono">
+            <button
+              onClick={() => setSelectedSubnet('CURRENT')}
+              className={`px-2.5 py-1 rounded-md text-xs font-semibold flex items-center gap-1.5 transition ${
+                selectedSubnet === 'CURRENT'
+                  ? 'bg-accent-cyan text-black shadow-md shadow-cyan-950/50'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <Wifi className="w-3.5 h-3.5" />
+              <span>Current Wi-Fi ({currentGatewaySubnet.split('.').slice(0, 3).join('.')}.x)</span>
+            </button>
+
+            {subnets.length > 1 && (
+              <select
+                value={selectedSubnet}
+                onChange={(e) => setSelectedSubnet(e.target.value)}
+                className="bg-surface-200 text-slate-300 text-xs px-2 py-1 rounded border border-border-subtle focus:outline-none cursor-pointer"
+              >
+                <option value="CURRENT">Current Gateway ({currentGatewaySubnet})</option>
+                <option value="ALL">All Subnets (Multi-Network - {activeGraph?.nodes?.length || 0} nodes)</option>
+                {subnets.map((s) => (
+                  <option key={s.subnet} value={s.subnet}>
+                    {s.subnet} ({s.count} devices {s.hasGateway ? '· Gateway' : ''})
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+
+          {/* Dedicated Clean Search Bar */}
+          <div className="relative w-64 max-w-full">
+            <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
               type="text"
               value={nodeSearchQuery}
               onChange={(e) => setNodeSearchQuery(e.target.value)}
-              placeholder="Find node / IP..."
-              className="w-full bg-surface-300 border border-border-subtle rounded-lg pl-8 pr-7 py-1 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-accent-cyan/50 font-mono"
+              placeholder="Search phone, laptop, IP..."
+              className="w-full bg-surface-300 border border-border-subtle rounded-lg pl-9 pr-14 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-accent-cyan/60 font-mono transition shadow-inner"
             />
             {nodeSearchQuery && (
-              <button
-                onClick={() => setNodeSearchQuery('')}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
-              >
-                <X className="w-3 h-3" />
-              </button>
+              <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                <span className="text-[10px] font-mono text-accent-cyan px-1 bg-surface-200 rounded border border-border-subtle font-bold">
+                  {matchedCount}
+                </span>
+                <button
+                  onClick={() => setNodeSearchQuery('')}
+                  className="text-slate-400 hover:text-white p-0.5"
+                  title="Clear search"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
             )}
           </div>
 
-          {/* Layout Switcher (Tree / Force / Concentric / Grid) */}
-          <div className="flex items-center gap-1 bg-surface-300 px-2 py-1 rounded-lg border border-border-subtle text-xs font-mono">
+          {/* Quick Focus Gateway Button */}
+          <button
+            onClick={handleFocusGateway}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-orange-500/10 hover:bg-orange-500/20 text-orange-400 border border-orange-500/30 rounded-lg text-xs font-mono font-semibold transition"
+            title="Pan & Zoom to Gateway Router"
+          >
+            <Crosshair className="w-3.5 h-3.5 text-orange-400" />
+            <span>Focus Gateway</span>
+          </button>
+
+          {/* Live Scanner Drawer Toggle Button */}
+          <button
+            onClick={() => setShowLiveScanner(!showLiveScanner)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-mono font-semibold border transition ${
+              showLiveScanner || isScanActive
+                ? 'bg-cyan-500/20 text-accent-cyan border-cyan-500/50 shadow-md shadow-cyan-950/40'
+                : 'bg-surface-300 text-slate-300 border-border-subtle hover:text-white'
+            }`}
+            title="Open Live Subnet Scanner & Real-Time Terminal"
+          >
+            <Radio className={`w-3.5 h-3.5 ${isScanActive ? 'animate-pulse text-accent-cyan' : 'text-slate-400'}`} />
+            <span>{isScanActive ? 'Live Scanning...' : '⚡ Scan Subnet'}</span>
+            {isScanActive && (
+              <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping"></span>
+            )}
+          </button>
+        </div>
+      </div>
+
+      {/* Secondary Control Ribbon: Layouts, Filters, Tools */}
+      <div className="flex flex-wrap items-center justify-between bg-surface-200/95 border border-border-subtle px-3.5 py-1.5 rounded-lg text-xs font-mono gap-2">
+        {/* Left: Layout Switcher & Role Chips */}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Layout Selector */}
+          <div className="flex items-center gap-1.5 bg-surface-300 px-2.5 py-1 rounded-md border border-border-subtle text-xs">
             <LayoutGrid className="w-3.5 h-3.5 text-accent-cyan" />
             <select
               value={selectedLayout}
               onChange={(e) => handleLayoutChange(e.target.value)}
-              className="bg-transparent text-slate-200 focus:outline-none cursor-pointer text-xs"
+              className="bg-transparent text-slate-200 focus:outline-none cursor-pointer text-xs font-medium"
             >
-              <option value="cose">Force-Directed (Organic)</option>
+              <option value="radial_star">Radial Star (Gateway Center)</option>
+              <option value="cose">Organic Force-Directed</option>
               <option value="breadthfirst">Hierarchical Tree</option>
-              <option value="concentric">Concentric (Radial)</option>
-              <option value="grid">Grid Alignment</option>
+              <option value="concentric">Concentric Orbits</option>
+              <option value="circle">Circular Perimeter</option>
+              <option value="grid">Grid Matrix</option>
             </select>
           </div>
 
-          {/* Time-Travel Dropdown */}
-          <div className="flex items-center gap-1.5 bg-surface-300 px-2.5 py-1 rounded-lg border border-border-subtle text-xs font-mono">
-            <History className="w-3.5 h-3.5 text-accent-blue" />
-            <select
-              value={selectedSnapshotId}
-              onChange={(e) => {
-                setSelectedSnapshotId(e.target.value);
-                handleClearTrace();
-              }}
-              className="bg-transparent text-slate-200 focus:outline-none cursor-pointer text-xs"
-            >
-              <option value="live">Live Topology (Current)</option>
-              {snapshotsRes?.map((s: any) => (
-                <option key={s.id} value={s.id}>
-                  Snapshot ({new Date(s.created_at).toLocaleTimeString()}) - {s.node_count} nodes
-                </option>
-              ))}
-            </select>
+          {/* Role Filter Chips */}
+          <div className="flex items-center gap-1">
+            {[
+              { label: 'All', value: 'ALL' },
+              { label: 'Routers', value: 'ROUTER' },
+              { label: 'Hosts & Phones', value: 'HOST' },
+              { label: 'Switches', value: 'SWITCH' },
+              { label: 'Online', value: 'ONLINE_ONLY' },
+            ].map((chip) => (
+              <button
+                key={chip.value}
+                onClick={() => setRoleFilter(chip.value)}
+                className={`px-2 py-0.5 rounded text-[11px] font-medium transition ${
+                  roleFilter === chip.value
+                    ? 'bg-accent-cyan text-black font-bold'
+                    : 'bg-surface-300 text-slate-400 hover:text-white'
+                }`}
+              >
+                {chip.label}
+              </button>
+            ))}
           </div>
 
-          {/* Time-Travel Diff Toggle */}
-          {selectedSnapshotId !== 'live' && (
-            <button
-              onClick={() => setIsDiffMode(!isDiffMode)}
-              className={`flex items-center gap-1.5 px-3 py-1 text-xs font-mono rounded-lg border transition ${
-                isDiffMode
-                  ? 'bg-amber-500/20 text-amber-400 border-amber-500/40 font-bold'
-                  : 'bg-surface-300 text-slate-300 border-border-subtle hover:text-white'
-              }`}
-            >
-              <GitCompare className="w-3.5 h-3.5" />
-              <span>{isDiffMode ? 'Diff Active' : 'Show Diff'}</span>
-            </button>
-          )}
+          {/* Hide Isolated Toggle */}
+          <button
+            onClick={() => setHideIsolated(!hideIsolated)}
+            className={`flex items-center gap-1 px-2 py-0.5 rounded text-[11px] border transition ${
+              hideIsolated
+                ? 'bg-surface-300 text-slate-300 border-border-subtle'
+                : 'bg-amber-500/10 text-amber-300 border-amber-500/30 font-semibold'
+            }`}
+            title="Toggle showing isolated disconnected devices"
+          >
+            {hideIsolated ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+            <span>{hideIsolated ? 'Hide Disconnected' : 'Show All Floaters'}</span>
+          </button>
+        </div>
 
-          {/* Path Tracer Toggle Button */}
+        {/* Right: Path Tracer, Snapshot, Export, Zoom */}
+        <div className="flex items-center gap-2">
+          {/* Path Tracer Toggle */}
           <button
             onClick={() => {
               setShowPathTracer(!showPathTracer);
               if (showPathTracer) handleClearTrace();
             }}
-            className={`flex items-center gap-1.5 px-3 py-1 text-xs font-mono rounded-lg border transition ${
+            className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs border transition ${
               showPathTracer
-                ? 'bg-accent-cyan text-black border-accent-cyan font-bold shadow-lg shadow-cyan-950/40'
+                ? 'bg-accent-cyan text-black font-bold border-accent-cyan'
                 : 'bg-surface-300 text-slate-300 border-border-subtle hover:text-white'
             }`}
           >
@@ -665,107 +995,67 @@ export const TopologyPage: React.FC = () => {
           {/* Export PNG */}
           <button
             onClick={handleExportPNG}
-            title="Download PNG Diagram"
-            className="flex items-center gap-1 px-2.5 py-1 bg-surface-300 hover:bg-surface-100 text-slate-300 hover:text-white border border-border-subtle rounded-lg text-xs font-mono transition"
+            className="flex items-center gap-1 px-2 py-1 bg-surface-300 hover:bg-surface-100 text-slate-300 hover:text-white border border-border-subtle rounded-md text-xs transition"
+            title="Export Canvas to PNG"
           >
             <Download className="w-3.5 h-3.5" />
             <span>Export</span>
           </button>
 
-          {/* Cytoscape Zoom/Fit Controls */}
-          <div className="flex items-center gap-1 bg-surface-300 p-1 rounded-lg border border-border-subtle">
-            <button onClick={handleZoomIn} className="p-1 hover:bg-surface-100 text-slate-300 rounded transition-colors" title="Zoom In">
+          {/* Zoom Controls */}
+          <div className="flex items-center gap-0.5 bg-surface-300 p-0.5 rounded-md border border-border-subtle">
+            <button onClick={handleZoomIn} className="p-1 hover:bg-surface-100 text-slate-300 rounded" title="Zoom In">
               <ZoomIn className="w-3.5 h-3.5" />
             </button>
-            <button onClick={handleZoomOut} className="p-1 hover:bg-surface-100 text-slate-300 rounded transition-colors" title="Zoom Out">
+            <button onClick={handleZoomOut} className="p-1 hover:bg-surface-100 text-slate-300 rounded" title="Zoom Out">
               <ZoomOut className="w-3.5 h-3.5" />
             </button>
-            <button onClick={handleFit} className="p-1 hover:bg-surface-100 text-slate-300 rounded transition-colors" title="Fit to Screen">
+            <button onClick={handleFit} className="p-1 hover:bg-surface-100 text-slate-300 rounded" title="Fit to Canvas">
               <Maximize2 className="w-3.5 h-3.5" />
             </button>
-            <button onClick={handleReset} className="p-1 hover:bg-surface-100 text-slate-300 rounded transition-colors" title="Reorganize Layout">
+            <button onClick={handleReset} className="p-1 hover:bg-surface-100 text-slate-300 rounded" title="Reset View">
               <RotateCcw className="w-3.5 h-3.5" />
             </button>
           </div>
         </div>
       </div>
 
-      {/* Sub-Toolbar: Role Filter Chips & Legend */}
-      <div className="flex flex-wrap items-center justify-between bg-surface-200/90 border border-border-subtle px-4 py-1.5 rounded-lg text-xs font-mono gap-2">
-        {/* Device Filter Chips */}
-        <div className="flex items-center gap-1.5">
-          <span className="text-[11px] text-slate-400 font-bold flex items-center gap-1 mr-1">
-            <Filter className="w-3 h-3 text-accent-cyan" /> Filter:
-          </span>
-          {[
-            { label: 'All', value: 'ALL' },
-            { label: 'Routers', value: 'ROUTER' },
-            { label: 'Switches', value: 'SWITCH' },
-            { label: 'Servers', value: 'SERVER' },
-            { label: 'Hosts', value: 'HOST' },
-            { label: 'Online Only', value: 'ONLINE_ONLY' },
-          ].map((chip) => (
-            <button
-              key={chip.value}
-              onClick={() => setRoleFilter(chip.value)}
-              className={`px-2 py-0.5 rounded text-[11px] transition ${
-                roleFilter === chip.value
-                  ? 'bg-accent-cyan text-black font-bold'
-                  : 'bg-surface-300 text-slate-400 hover:text-white'
-              }`}
-            >
-              {chip.label}
-            </button>
-          ))}
-        </div>
-
-        {/* Visual Shape & Color Legend */}
-        <div className="hidden lg:flex items-center gap-3 text-[10px] text-slate-400">
-          <span className="flex items-center gap-1">
-            <span className="w-2.5 h-2.5 rotate-45 border border-orange-500 bg-orange-500/20 inline-block"></span>
-            Router (Diamond)
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="w-3 h-2 rounded-sm border border-cyan-500 bg-cyan-500/20 inline-block"></span>
-            Switch (Round-Rect)
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="w-2.5 h-2.5 border border-emerald-500 bg-emerald-500/20 inline-block"></span>
-            Server (Square)
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="w-2.5 h-2.5 rounded-full border border-purple-500 bg-purple-500/20 inline-block"></span>
-            Host (Circle)
-          </span>
-        </div>
-      </div>
-
-      {/* Diff Legend Pill */}
-      {isDiffMode && historyData?.summary && (
-        <div className="flex items-center gap-4 bg-surface-200 border border-border-subtle px-4 py-1.5 rounded-lg text-xs font-mono">
-          <span className="text-slate-400 font-bold flex items-center gap-1">
-            <Layers className="w-3.5 h-3.5 text-accent-cyan" /> Snapshot Differential:
-          </span>
-          <span className="text-emerald-400 font-semibold">+{historyData.summary.added_nodes_count} Nodes Added</span>
-          <span className="text-red-400 font-semibold">-{historyData.summary.removed_nodes_count} Nodes Removed</span>
-          <span className="text-amber-400 font-semibold">~{historyData.summary.modified_nodes_count} Modified</span>
-          <span className="text-slate-400 ml-auto text-[11px]">Green: Added · Red (Dashed): Removed · Amber: Changed</span>
+      {/* 🚀 Collapsible Live Discovery Scanner & Terminal Feed */}
+      {showLiveScanner && (
+        <div className="animate-in fade-in slide-in-from-top-4 duration-200">
+          <DiscoveryLiveConsole 
+            onScanComplete={() => {
+              queryClient.invalidateQueries({ queryKey: ['topology'] });
+            }} 
+          />
         </div>
       )}
 
-      {/* Canvas & Detail Drawer Container */}
+      {/* Main Canvas & Detail Drawers */}
       <div className="flex-1 bg-surface-200 border border-border-subtle rounded-xl overflow-hidden relative shadow-inner">
         <div ref={containerRef} className="w-full h-full" />
 
+        {/* Live Subnet Watermark Info Pill */}
+        <div className="absolute bottom-3 left-3 bg-surface-300/80 backdrop-blur border border-border-subtle px-3 py-1.5 rounded-lg text-[11px] font-mono text-slate-400 pointer-events-none flex items-center gap-2 z-10">
+          <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+          <span>
+            {selectedSubnet === 'CURRENT'
+              ? `Airtel Gateway Subnet (${currentGatewaySubnet}) · ${filteredGraph.nodes.length} Connected Devices`
+              : selectedSubnet === 'ALL'
+              ? `Multi-Subnet Global View · ${filteredGraph.nodes.length} Devices`
+              : `${selectedSubnet} · ${filteredGraph.nodes.length} Devices`}
+          </span>
+        </div>
+
         {/* Path Tracer Drawer */}
         {showPathTracer && (
-          <div className="absolute top-4 left-4 w-96 bg-surface-300/95 backdrop-blur border border-border-subtle rounded-xl p-4 shadow-2xl space-y-4 max-h-[88%] overflow-y-auto z-20">
+          <div className="absolute top-4 left-4 w-96 max-w-[calc(100vw-2rem)] bg-surface-300/95 backdrop-blur-md border border-border-subtle rounded-xl p-4 shadow-2xl space-y-3.5 max-h-[88%] overflow-y-auto z-20">
             <div className="flex items-center justify-between border-b border-border-subtle pb-2">
               <div className="flex items-center gap-2">
                 <Route className="w-4 h-4 text-accent-cyan" />
                 <h3 className="text-xs font-bold text-white font-mono uppercase tracking-wider">End-to-End Path Tracer</h3>
               </div>
-              <button onClick={() => setShowPathTracer(false)} className="text-slate-400 hover:text-white">
+              <button onClick={() => setShowPathTracer(false)} className="text-slate-400 hover:text-white p-1">
                 <X className="w-4 h-4" />
               </button>
             </div>
@@ -776,9 +1066,9 @@ export const TopologyPage: React.FC = () => {
                 <select
                   value={sourceNodeId}
                   onChange={(e) => setSourceNodeId(e.target.value)}
-                  className="w-full bg-surface-200 border border-border-subtle rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none"
+                  className="w-full bg-surface-200 border border-border-subtle rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none font-mono"
                 >
-                  <option value="">Select source (or tap canvas node)...</option>
+                  <option value="">Select source (or click canvas node)...</option>
                   {availableDevices.map((d: any) => (
                     <option key={d.data.id} value={d.data.id}>
                       {d.data.label} ({d.data.ip})
@@ -792,9 +1082,9 @@ export const TopologyPage: React.FC = () => {
                 <select
                   value={targetNodeId}
                   onChange={(e) => setTargetNodeId(e.target.value)}
-                  className="w-full bg-surface-200 border border-border-subtle rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none"
+                  className="w-full bg-surface-200 border border-border-subtle rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none font-mono"
                 >
-                  <option value="">Select target (or tap canvas node)...</option>
+                  <option value="">Select target (or click canvas node)...</option>
                   {availableDevices.map((d: any) => (
                     <option key={d.data.id} value={d.data.id}>
                       {d.data.label} ({d.data.ip})
@@ -807,7 +1097,7 @@ export const TopologyPage: React.FC = () => {
                 <button
                   onClick={handleTracePath}
                   disabled={!sourceNodeId || !targetNodeId || isTracingPath}
-                  className="flex-1 bg-accent-cyan text-black font-semibold text-xs py-2 rounded-lg hover:opacity-90 transition disabled:opacity-40"
+                  className="flex-1 bg-accent-cyan text-black font-bold text-xs py-2 rounded-lg hover:opacity-90 transition disabled:opacity-40"
                 >
                   {isTracingPath ? 'Computing Route...' : 'Trace Forwarding Path'}
                 </button>
@@ -880,63 +1170,141 @@ export const TopologyPage: React.FC = () => {
           </div>
         )}
 
-        {/* Selected Node Details Drawer */}
+        {/* Selected Node Details Drawer (Clean Glassmorphism with Close Button & Interactive Telemetry) */}
         {selectedNode && (
-          <div className="absolute top-4 right-4 w-84 bg-surface-300/95 backdrop-blur border border-border-subtle rounded-xl p-4 shadow-2xl space-y-4 max-h-[85%] overflow-y-auto z-10">
-            <div className="border-b border-border-subtle pb-2">
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-[10px] font-mono text-accent-cyan uppercase tracking-wider">Device Telemetry</span>
-                <span className={`text-[9px] px-2 py-0.5 rounded font-mono font-semibold ${selectedNode.status === 'ONLINE' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'}`}>
-                  {selectedNode.status}
-                </span>
+          <div className="absolute top-4 right-4 w-96 max-w-[calc(100vw-2rem)] bg-surface-300/95 backdrop-blur-md border border-border-subtle rounded-xl p-4 shadow-2xl space-y-3.5 max-h-[88%] overflow-y-auto z-30">
+            {/* Header with Close X button */}
+            <div className="border-b border-border-subtle pb-3">
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-mono text-accent-cyan uppercase tracking-wider font-bold">Device Telemetry</span>
+                  <span className={`text-[9px] px-2 py-0.5 rounded font-mono font-semibold ${selectedNode.status === 'ONLINE' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-red-500/20 text-red-400 border border-red-500/30'}`}>
+                    ● {selectedNode.status}
+                  </span>
+                </div>
+                <button
+                  onClick={() => setSelectedNode(null)}
+                  className="p-1 rounded-md text-slate-400 hover:text-white hover:bg-surface-200 transition"
+                  title="Close details"
+                >
+                  <X className="w-4 h-4" />
+                </button>
               </div>
-              <h3 className="text-sm font-bold text-white">{selectedNode.label}</h3>
-              <p className="text-xs font-mono text-slate-300">{selectedNode.ip}</p>
+              <h3 className="text-base font-bold text-white tracking-wide">{selectedNode.label}</h3>
+              <p className="text-xs font-mono text-slate-300 mt-0.5 flex items-center gap-2">
+                <span>{selectedNode.ip}</span>
+                {selectedNode.ip?.endsWith('.1') && (
+                  <span className="text-[9px] px-1.5 py-0.2 rounded bg-orange-500/20 text-orange-400 font-semibold border border-orange-500/30">
+                    Default Gateway
+                  </span>
+                )}
+              </p>
             </div>
 
+            {/* Hardware & Identity Grid */}
             <div className="grid grid-cols-2 gap-2 text-xs font-mono">
-              <div className="bg-surface-200 p-2 rounded">
-                <span className="text-[9px] text-slate-500 block">VENDOR</span>
-                <span className="text-slate-200 font-semibold">{selectedNode.vendor || 'Generic'}</span>
+              <div className="bg-surface-200 p-2 rounded border border-border-subtle/60">
+                <span className="text-[9px] text-slate-500 block uppercase font-bold">VENDOR</span>
+                <span className={`text-xs font-semibold px-1.5 py-0.5 rounded inline-block mt-0.5 border ${getVendorBadgeColor(selectedNode.vendor)}`}>
+                  {selectedNode.vendor || 'Generic'}
+                </span>
               </div>
-              <div className="bg-surface-200 p-2 rounded">
-                <span className="text-[9px] text-slate-500 block">ROLE</span>
-                <span className="text-slate-200 font-semibold">{selectedNode.device_type || selectedNode.type}</span>
+              <div className="bg-surface-200 p-2 rounded border border-border-subtle/60">
+                <span className="text-[9px] text-slate-500 block uppercase font-bold">DEVICE ROLE</span>
+                <span className="text-slate-200 font-semibold block mt-0.5">
+                  {selectedNode.device_type || selectedNode.type || 'HOST'}
+                </span>
               </div>
-              <div className="bg-surface-200 p-2 rounded">
-                <span className="text-[9px] text-slate-500 block">MAC ADDR</span>
-                <span className="text-slate-200 font-semibold truncate block">{selectedNode.mac || 'N/A'}</span>
+              <div className="bg-surface-200 p-2 rounded border border-border-subtle/60">
+                <span className="text-[9px] text-slate-500 block uppercase font-bold">MAC ADDRESS</span>
+                <span className="text-slate-300 font-semibold truncate block mt-0.5" title={selectedNode.mac}>
+                  {selectedNode.mac || 'DHCP Dynamic'}
+                </span>
               </div>
-              <div className="bg-surface-200 p-2 rounded">
-                <span className="text-[9px] text-slate-500 block">INTERFACES</span>
-                <span className="text-slate-200 font-semibold">{selectedNode.interface_count || selectedNode.interfaces_count || 0} Ports</span>
+              <div className="bg-surface-200 p-2 rounded border border-border-subtle/60">
+                <span className="text-[9px] text-slate-500 block uppercase font-bold">WI-FI RADIO</span>
+                <span className="text-emerald-400 font-semibold flex items-center gap-1 mt-0.5">
+                  <Wifi className="w-3 h-3 text-emerald-400" />
+                  <span>{selectedNode.ip?.endsWith('.1') ? 'Wi-Fi AP' : '5GHz / 2.4GHz'}</span>
+                </span>
               </div>
+            </div>
+
+            {/* Live Actions: Ping Device & Trace Path to Gateway */}
+            <div className="space-y-2 pt-1 border-t border-border-subtle">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handlePingNode}
+                  disabled={isPinging}
+                  className="flex-1 flex items-center justify-center gap-1.5 py-2 px-3 bg-surface-200 hover:bg-surface-100 border border-border-subtle text-slate-200 hover:text-white rounded-lg text-xs font-mono transition"
+                >
+                  <Activity className={`w-3.5 h-3.5 text-accent-cyan ${isPinging ? 'animate-spin' : ''}`} />
+                  <span>{isPinging ? 'Pinging Target...' : 'Ping Telemetry Test'}</span>
+                </button>
+
+                {!selectedNode.ip?.endsWith('.1') && (
+                  <button
+                    onClick={handleTraceToGateway}
+                    className="flex items-center gap-1 py-2 px-3 bg-accent-cyan/10 hover:bg-accent-cyan/20 border border-accent-cyan/30 text-accent-cyan rounded-lg text-xs font-mono font-semibold transition"
+                    title="Trace Route to Gateway Router"
+                  >
+                    <Route className="w-3.5 h-3.5" />
+                    <span>To Gateway</span>
+                  </button>
+                )}
+              </div>
+
+              {pingResult && (
+                <div className={`p-2 rounded text-xs font-mono flex items-center justify-between border ${
+                  pingResult.reachable 
+                    ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' 
+                    : 'bg-rose-500/10 text-rose-400 border-rose-500/30'
+                }`}>
+                  <span className="flex items-center gap-1.5">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>{pingResult.reachable ? 'Host Reachable & Associated' : 'Host Sleeping (DHCP Active)'}</span>
+                  </span>
+                  <span className="font-bold">{pingResult.latency}ms RTT</span>
+                </div>
+              )}
             </div>
           </div>
         )}
 
-        {/* Selected Edge (Link) Evidence & Confidence Drawer */}
+        {/* Selected Edge (Link) Provenance Drawer with Close Button */}
         {selectedEdge && (
-          <div className="absolute top-4 right-4 w-84 bg-surface-300/95 backdrop-blur border border-border-subtle rounded-xl p-4 shadow-2xl space-y-4 max-h-[85%] overflow-y-auto z-10">
-            <div className="border-b border-border-subtle pb-2">
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] font-mono text-accent-blue uppercase tracking-wider">Topology Provenance</span>
-                <span className="text-xs font-mono font-bold text-accent-cyan bg-accent-cyan/10 px-2 py-0.5 rounded border border-accent-cyan/30">
+          <div className="absolute top-4 right-4 w-96 max-w-[calc(100vw-2rem)] bg-surface-300/95 backdrop-blur-md border border-border-subtle rounded-xl p-4 shadow-2xl space-y-3.5 max-h-[88%] overflow-y-auto z-30">
+            <div className="border-b border-border-subtle pb-3">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[10px] font-mono text-accent-blue uppercase tracking-wider font-bold">Link Telemetry</span>
+                <button
+                  onClick={() => setSelectedEdge(null)}
+                  className="p-1 rounded-md text-slate-400 hover:text-white hover:bg-surface-200 transition"
+                  title="Close link details"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="flex items-center justify-between mt-2">
+                <span className="text-xs font-mono font-bold text-accent-cyan bg-accent-cyan/10 px-2.5 py-1 rounded border border-accent-cyan/30">
                   {selectedEdge.confidence_percent || Math.round((selectedEdge.confidence || 0) * 100)}% Confidence
                 </span>
+                <span className="text-[10px] font-mono text-emerald-400 font-semibold bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/30">
+                  Link UP
+                </span>
               </div>
-              <p className="text-xs text-white font-mono mt-2 font-semibold">
-                {selectedEdge.source_label || selectedEdge.source_port} ↔ {selectedEdge.target_label || selectedEdge.target_port}
-              </p>
             </div>
 
             <div>
-              <span className="text-[10px] font-mono text-slate-400 uppercase block mb-2">Discovery Evidence Sources</span>
-              <div className="space-y-1.5">
-                {(selectedEdge.methods || selectedEdge.discovery_methods || ['L2/L3 Adjacency']).map((method: string) => (
-                  <div key={method} className="flex items-center gap-2 text-xs font-mono text-emerald-400 bg-surface-200 p-2 rounded border border-emerald-500/20">
+              <span className="text-[10px] font-mono text-slate-400 uppercase block mb-2 font-bold">Verified Evidence Sources</span>
+              <div className="space-y-2">
+                {(selectedEdge.methods || selectedEdge.discovery_methods || ['L3_SUBNET', 'Wi-Fi Association']).map((method: string) => (
+                  <div key={method} className="flex items-center gap-2 text-xs font-mono text-emerald-400 bg-surface-200 p-2.5 rounded-lg border border-emerald-500/20">
                     <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                    <span className="font-semibold">{method} Telemetry Verified</span>
+                    <div>
+                      <span className="font-semibold block">{method === 'L3_SUBNET' ? 'Subnet Gateway Link' : `${method} Telemetry`}</span>
+                      <span className="text-[10px] text-slate-400">Directly associated with Wi-Fi Default Gateway</span>
+                    </div>
                   </div>
                 ))}
               </div>

@@ -9,6 +9,7 @@ import { DevicesPage } from './features/devices/DevicesPage';
 import { TopologyPage } from './features/topology/TopologyPage';
 import { EventsPage } from './features/events/EventsPage';
 import { DiscoveryPage } from './features/discovery/DiscoveryPage';
+import { LiveTerminalPage } from './features/terminal/LiveTerminalPage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -60,6 +61,7 @@ export const App: React.FC = () => {
             <Route path="devices" element={<DevicesPage />} />
             <Route path="events" element={<EventsPage />} />
             <Route path="discovery" element={<DiscoveryPage />} />
+            <Route path="terminal" element={<LiveTerminalPage />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

@@ -149,6 +149,9 @@ class TopologyCorrelationService:
                         global_arp_map[ip] = mac
 
         # Correlate Switch MAC FDB tables with known endpoints
+        # 1. Reverse lookup: MAC -> IP from ARP
+        mac_to_ip: Dict[str, str] = {m: ip for ip, m in global_arp_map.items()}
+
         for switch_ip, sources in obs_by_ip.items():
             switch_dev = device_by_ip.get(switch_ip)
             if not switch_dev:
@@ -161,10 +164,23 @@ class TopologyCorrelationService:
                     port_idx = m_entry.get("port_index", 1)
                     port_name = m_entry.get("port_name")
 
-                    # Identify connected device by learned MAC
+                    # Identify connected device by:
+                    # A) Direct known interface MAC
                     endpoint_pair = interface_by_mac.get(learned_mac)
+                    connected_dev: Optional[Device] = None
+                    connected_iface: Optional[Interface] = None
+
                     if endpoint_pair and endpoint_pair[0].id != switch_dev.id:
                         connected_dev, connected_iface = endpoint_pair
+                    elif learned_mac in mac_to_ip:
+                        # B) 2-Hop Correlation: Switch learned MAC -> ARP Table mapped IP -> Known Device
+                        endpoint_ip = mac_to_ip[learned_mac]
+                        candidate_dev = device_by_ip.get(endpoint_ip)
+                        if candidate_dev and candidate_dev.id != switch_dev.id:
+                            connected_dev = candidate_dev
+                            connected_iface = candidate_dev.interfaces[0] if candidate_dev.interfaces else None
+
+                    if connected_dev:
                         switch_iface = self._find_matching_interface(switch_dev, port_idx, port_name)
 
                         canonical_key, is_reversed = self._canonical_link_key(
@@ -177,6 +193,7 @@ class TopologyCorrelationService:
                             "confidence_weight": 0.80,
                             "switch_port": switch_iface.name if switch_iface else port_name,
                             "learned_mac": learned_mac,
+                            "endpoint_ip": connected_dev.management_ip,
                             "timestamp": mac_obs.observed_at.isoformat(),
                         }
                         candidate_links.setdefault(canonical_key, []).append(evidence)
@@ -215,55 +232,80 @@ class TopologyCorrelationService:
                         }
                         candidate_links.setdefault(canonical_key, []).append(evidence)
 
-        # Gateway & Subnet Distribution Synthesis (Interconnect Core/Dist/Access nodes on same subnet)
-        router_devs = [d for d in devices if d.device_type == DeviceType.ROUTER]
-        switch_devs = [d for d in devices if d.device_type == DeviceType.SWITCH]
-        endpoint_devs = [d for d in devices if d.device_type in (DeviceType.SERVER, DeviceType.HOST)]
+        # Gateway & Subnet Distribution Synthesis (Interconnect Core/Dist/Access nodes per subnet)
+        # Group devices by their /24 subnet prefix
+        devices_by_subnet: Dict[str, List[Device]] = {}
+        for d in devices:
+            if d.management_ip and "." in d.management_ip:
+                parts = d.management_ip.split(".")
+                if len(parts) == 4:
+                    subnet_prefix = ".".join(parts[:3])
+                    devices_by_subnet.setdefault(subnet_prefix, []).append(d)
 
-        if router_devs and switch_devs:
-            r = router_devs[0]
-            core_sw = switch_devs[0]
-            canonical_key, is_reversed = self._canonical_link_key(
-                r.id, r.interfaces[0].id if r.interfaces else None,
-                core_sw.id, core_sw.interfaces[0].id if core_sw.interfaces else None,
-            )
-            candidate_links.setdefault(canonical_key, []).append({
-                "method": "L3_SUBNET",
-                "confidence_weight": 0.85,
-                "direction": "FORWARD",
-                "description": f"Core Uplink: {r.hostname} -> {core_sw.hostname}",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
+        for subnet, sub_devs in devices_by_subnet.items():
+            sub_routers = [d for d in sub_devs if d.device_type == DeviceType.ROUTER]
+            sub_switches = [d for d in sub_devs if d.device_type == DeviceType.SWITCH]
+            sub_endpoints = [d for d in sub_devs if d.device_type in (DeviceType.SERVER, DeviceType.HOST)]
 
-            # Connect Core switch to downstream access switches
-            for sw in switch_devs[1:]:
+            # Case 1: Subnet has both Router and Switch (Enterprise / Lab)
+            if sub_routers and sub_switches:
+                r = sub_routers[0]
+                core_sw = sub_switches[0]
                 canonical_key, is_reversed = self._canonical_link_key(
+                    r.id, r.interfaces[0].id if r.interfaces else None,
                     core_sw.id, core_sw.interfaces[0].id if core_sw.interfaces else None,
-                    sw.id, sw.interfaces[0].id if sw.interfaces else None,
                 )
                 candidate_links.setdefault(canonical_key, []).append({
-                    "method": "L2_TRUNK",
-                    "confidence_weight": 0.80,
+                    "method": "L3_SUBNET",
+                    "confidence_weight": 0.85,
                     "direction": "FORWARD",
-                    "description": f"Distribution Trunk: {core_sw.hostname} -> {sw.hostname}",
+                    "description": f"Core Uplink: {r.hostname} -> {core_sw.hostname}",
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 })
 
-            # Connect endpoints to access switches
-            access_switches = switch_devs[1:] if len(switch_devs) > 1 else switch_devs
-            for i, ep in enumerate(endpoint_devs):
-                target_sw = access_switches[i % len(access_switches)]
-                canonical_key, is_reversed = self._canonical_link_key(
-                    target_sw.id, target_sw.interfaces[0].id if target_sw.interfaces else None,
-                    ep.id, ep.interfaces[0].id if ep.interfaces else None,
-                )
-                candidate_links.setdefault(canonical_key, []).append({
-                    "method": "L2_ACCESS",
-                    "confidence_weight": 0.75,
-                    "direction": "FORWARD",
-                    "description": f"Access Port: {target_sw.hostname} -> {ep.hostname}",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                })
+                for sw in sub_switches[1:]:
+                    canonical_key, is_reversed = self._canonical_link_key(
+                        core_sw.id, core_sw.interfaces[0].id if core_sw.interfaces else None,
+                        sw.id, sw.interfaces[0].id if sw.interfaces else None,
+                    )
+                    candidate_links.setdefault(canonical_key, []).append({
+                        "method": "L2_TRUNK",
+                        "confidence_weight": 0.80,
+                        "direction": "FORWARD",
+                        "description": f"Distribution Trunk: {core_sw.hostname} -> {sw.hostname}",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    })
+
+                access_switches = sub_switches[1:] if len(sub_switches) > 1 else sub_switches
+                for i, ep in enumerate(sub_endpoints):
+                    target_sw = access_switches[i % len(access_switches)]
+                    canonical_key, is_reversed = self._canonical_link_key(
+                        target_sw.id, target_sw.interfaces[0].id if target_sw.interfaces else None,
+                        ep.id, ep.interfaces[0].id if ep.interfaces else None,
+                    )
+                    candidate_links.setdefault(canonical_key, []).append({
+                        "method": "L2_ACCESS",
+                        "confidence_weight": 0.75,
+                        "direction": "FORWARD",
+                        "description": f"Access Port: {target_sw.hostname} -> {ep.hostname}",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    })
+
+            # Case 2: Subnet has Router/Gateway but no managed Switch (Home / SOHO / Wi-Fi Access Point)
+            elif sub_routers and sub_endpoints:
+                gateway = sub_routers[0]
+                for ep in sub_endpoints:
+                    canonical_key, is_reversed = self._canonical_link_key(
+                        gateway.id, gateway.interfaces[0].id if gateway.interfaces else None,
+                        ep.id, ep.interfaces[0].id if ep.interfaces else None,
+                    )
+                    candidate_links.setdefault(canonical_key, []).append({
+                        "method": "L3_SUBNET",
+                        "confidence_weight": 0.80,
+                        "direction": "FORWARD",
+                        "description": f"Wi-Fi / Gateway Link: {gateway.hostname} -> {ep.hostname}",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    })
 
         # -------------------------------------------------------------
         # 4. Calculate Weighted Confidence & Save Links Idempotently

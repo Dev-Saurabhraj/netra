@@ -11,6 +11,7 @@ from app.infrastructure.database.models.topology import Link, TopologySnapshot
 from app.infrastructure.database.models.interface import Interface
 from app.api.dependencies import get_current_user
 from app.infrastructure.database.models.user import User
+from app.application.services.identity_service import IdentityResolutionService
 
 router = APIRouter(prefix="/topology", tags=["Topology"])
 
@@ -43,10 +44,19 @@ async def get_current_topology(
 
     nodes = []
     for d in devices:
+        label = d.hostname
+        if not label or label.startswith("node-") or label.startswith("host-") or label == "unknown-node":
+            label = IdentityResolutionService.generate_friendly_hostname(
+                ip=d.management_ip,
+                vendor=d.vendor,
+                device_type=d.device_type,
+                mac=d.mac_address,
+            )
+
         nodes.append({
             "data": {
                 "id": d.id,
-                "label": d.hostname,
+                "label": label,
                 "ip": d.management_ip,
                 "mac": d.mac_address,
                 "device_type": d.device_type.value,

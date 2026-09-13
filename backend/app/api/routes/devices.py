@@ -11,6 +11,7 @@ from app.infrastructure.database.models.interface import Interface
 from app.infrastructure.database.models.topology import Link
 from app.api.dependencies import get_current_user
 from app.infrastructure.database.models.user import User
+from app.application.services.identity_service import IdentityResolutionService
 
 router = APIRouter(prefix="/devices", tags=["Devices"])
 
@@ -60,9 +61,18 @@ async def list_devices(
 
     device_list = []
     for d in devices:
+        hostname = d.hostname
+        if not hostname or hostname.startswith("node-") or hostname.startswith("host-") or hostname == "unknown-node":
+            hostname = IdentityResolutionService.generate_friendly_hostname(
+                ip=d.management_ip,
+                vendor=d.vendor,
+                device_type=d.device_type,
+                mac=d.mac_address,
+            )
+
         device_list.append({
             "id": d.id,
-            "hostname": d.hostname,
+            "hostname": hostname,
             "management_ip": d.management_ip,
             "mac_address": d.mac_address,
             "vendor": d.vendor,
@@ -120,10 +130,19 @@ async def get_device_detail(
             "last_seen": iface.last_seen.isoformat() if iface.last_seen else None,
         })
 
+    hostname = device.hostname
+    if not hostname or hostname.startswith("node-") or hostname.startswith("host-") or hostname == "unknown-node":
+        hostname = IdentityResolutionService.generate_friendly_hostname(
+            ip=device.management_ip,
+            vendor=device.vendor,
+            device_type=device.device_type,
+            mac=device.mac_address,
+        )
+
     return {
         "data": {
             "id": device.id,
-            "hostname": device.hostname,
+            "hostname": hostname,
             "management_ip": device.management_ip,
             "mac_address": device.mac_address,
             "chassis_id": device.chassis_id,

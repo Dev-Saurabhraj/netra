@@ -201,6 +201,82 @@ async def test_switch_mac_table_endpoint_correlation(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
+async def test_fdb_plus_arp_two_hop_endpoint_correlation(db_session: AsyncSession):
+    """
+    Test Switch MAC FDB table + Router ARP table correlates a non-SNMP endpoint (Laptop)
+    that has NO local interface MAC pre-configured on the device record.
+    """
+    # 1. Core Switch
+    sw_core = Device(
+        hostname="KIET_CORE_SWITCH",
+        management_ip="10.21.216.1",
+        mac_address="c0:bf:a7:73:09:41",
+        vendor="Juniper",
+        device_type=DeviceType.SWITCH,
+        status=DeviceStatus.ONLINE,
+    )
+    # 2. Non-SNMP Laptop (e.g. user laptop on Wi-Fi/access port)
+    laptop = Device(
+        hostname="node-10-21-220-1",
+        management_ip="10.21.220.1",
+        mac_address=None,  # Not known via SNMP
+        vendor="Generic",
+        device_type=DeviceType.UNKNOWN,
+        status=DeviceStatus.ONLINE,
+    )
+    db_session.add_all([sw_core, laptop])
+    await db_session.flush()
+
+    sw_port36 = Interface(device_id=sw_core.id, name="eth36", if_index=36)
+    db_session.add(sw_port36)
+    await db_session.flush()
+
+    # Router / Core Switch has ARP entry mapping IP 10.21.220.1 -> MAC 96:46:d1:a0:ec:34
+    obs_arp = Observation(
+        source_type="ARP",
+        target="10.21.216.1",
+        raw_payload={},
+        normalized_data={
+            "arp_entries": [{
+                "if_index": 1,
+                "ip_address": "10.21.220.1",
+                "mac_address": "96:46:d1:a0:ec:34",
+                "entry_type": "dynamic"
+            }]
+        }
+    )
+
+    # Core Switch has FDB entry showing MAC 96:46:d1:a0:ec:34 learned on port index 36 (eth36)
+    obs_mac = Observation(
+        source_type="MAC_TABLE",
+        target="10.21.216.1",
+        raw_payload={},
+        normalized_data={
+            "mac_entries": [{
+                "mac_address": "96:46:d1:a0:ec:34",
+                "port_index": 36,
+                "port_name": "eth36",
+                "status": "learned"
+            }]
+        }
+    )
+    db_session.add_all([obs_arp, obs_mac])
+    await db_session.commit()
+
+    topo_service = TopologyCorrelationService(db_session)
+    links, snapshot = await topo_service.correlate_topology()
+
+    # Link must be formed connecting switch to laptop!
+    assert len(links) >= 1
+    fdb_link = next(l for l in links if "MAC_TABLE_AND_ARP" in l.discovery_methods)
+    assert fdb_link.status == LinkStatus.ACTIVE
+    assert fdb_link.confidence >= 0.80  # Combined Bayesian confidence (FDB 0.80 + ARP 0.75 = 0.95)
+    assert "MAC_TABLE_AND_ARP" in fdb_link.discovery_methods
+    assert "ARP" in fdb_link.discovery_methods
+    assert {fdb_link.source_device_id, fdb_link.destination_device_id} == {sw_core.id, laptop.id}
+
+
+@pytest.mark.asyncio
 async def test_change_detection_engine(db_session: AsyncSession):
     """
     Test differential change detection engine detects added links and removed links.

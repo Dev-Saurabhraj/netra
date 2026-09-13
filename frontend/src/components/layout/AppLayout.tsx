@@ -14,14 +14,130 @@ import {
   X,
   ArrowRight,
   Clock,
-  ChevronRight
+  ChevronRight,
+  Terminal
 } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../../stores/authStore';
 import { apiClient } from '../../lib/api';
+import { useNetworkWorkspaceStore } from '../../stores/networkWorkspaceStore';
+import { NetworkTabBar } from './NetworkTabBar';
 
 export const AppLayout: React.FC = () => {
   const { user, logout } = useAuthStore();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+
+  const { 
+    tabs, 
+    activeTabId, 
+    startScanning, 
+    updateProgress, 
+    setStage, 
+    completeScanning 
+  } = useNetworkWorkspaceStore();
+
+  const scanningTab = tabs.find((t) => t.isScanning);
+
+  // App-Wide Singleton WebSocket stream for persistent discovery telemetry
+  useEffect(() => {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.host;
+    const wsUrl = `${protocol}//${host.includes(':') ? host.split(':')[0] + ':8000' : host}/api/v1/ws/events`;
+
+    let socket: WebSocket | null = null;
+    try {
+      socket = new WebSocket(wsUrl);
+
+      socket.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          const type = payload.type;
+          const data = payload.data;
+
+          const currentActiveTab = useNetworkWorkspaceStore.getState().activeTabId;
+
+          if (type === 'DISCOVERY_STARTED') {
+            startScanning(currentActiveTab, data.run_id, data.total_targets);
+            if (data.log) {
+              updateProgress(currentActiveTab, {}, {
+                id: Math.random().toString(36).substring(7),
+                timestamp: data.log.timestamp || new Date().toISOString(),
+                level: data.log.level || 'INFO',
+                message: data.log.message,
+                stage: data.log.stage || 'INIT'
+              });
+            }
+          } else if (type === 'DISCOVERY_PROGRESS') {
+            const currentTabs = useNetworkWorkspaceStore.getState().tabs;
+            const targetTab = currentTabs.find(t => t.activeRunId === data.run_id)?.id || currentActiveTab;
+            
+            const logEntry = data.log ? {
+              id: Math.random().toString(36).substring(7),
+              timestamp: data.log.timestamp || new Date().toISOString(),
+              level: data.log.level || (data.status === 'ONLINE' ? 'SUCCESS' : 'DEBUG'),
+              ip: data.log.ip || data.current_ip,
+              status: data.log.status || data.status,
+              message: data.log.message || `${data.current_ip} processed`,
+              device: data.device
+            } : undefined;
+
+            const devEntry = data.device ? {
+              ...data.device,
+              timestamp: new Date().toISOString()
+            } : undefined;
+
+            updateProgress(targetTab, {
+              processed: data.processed,
+              total: data.total,
+              successful: data.successful,
+              failed: data.failed,
+              percent: data.percent,
+              currentIp: data.current_ip,
+            }, logEntry, devEntry);
+          } else if (type === 'DISCOVERY_STAGE') {
+            const currentTabs = useNetworkWorkspaceStore.getState().tabs;
+            const targetTab = currentTabs.find(t => t.activeRunId === data.run_id)?.id || currentActiveTab;
+            const logEntry = data.log ? {
+              id: Math.random().toString(36).substring(7),
+              timestamp: data.log.timestamp || new Date().toISOString(),
+              level: data.log.level || 'INFO',
+              message: data.log.message,
+              stage: data.stage
+            } : undefined;
+            setStage(targetTab, data.stage, logEntry);
+          } else if (type === 'DISCOVERY_COMPLETED') {
+            const currentTabs = useNetworkWorkspaceStore.getState().tabs;
+            const targetTab = currentTabs.find(t => t.activeRunId === data.run_id)?.id || currentActiveTab;
+            const logEntry = data.log ? {
+              id: Math.random().toString(36).substring(7),
+              timestamp: data.log.timestamp || new Date().toISOString(),
+              level: data.log.level || 'SUCCESS',
+              message: data.log.message,
+              stage: 'COMPLETED'
+            } : undefined;
+            completeScanning(targetTab, logEntry);
+
+            // Invalidate React Query caches globally
+            queryClient.invalidateQueries({ queryKey: ['topology'] });
+            queryClient.invalidateQueries({ queryKey: ['devices'] });
+            queryClient.invalidateQueries({ queryKey: ['discovery-runs'] });
+          } else if (type === 'TOPOLOGY_UPDATED') {
+            queryClient.invalidateQueries({ queryKey: ['topology'] });
+            queryClient.invalidateQueries({ queryKey: ['devices'] });
+          }
+        } catch (e) {
+          // ignore parsing error
+        }
+      };
+    } catch (err) {
+      console.warn('AppLayout WebSocket error:', err);
+    }
+
+    return () => {
+      if (socket) socket.close();
+    };
+  }, [startScanning, updateProgress, setStage, completeScanning, queryClient]);
 
   // Global Search States
   const [searchQuery, setSearchQuery] = useState('');
@@ -199,6 +315,25 @@ export const AppLayout: React.FC = () => {
               <Compass className="w-4 h-4" />
               <span>Discovery Engine</span>
             </NavLink>
+
+            <NavLink
+              to="/terminal"
+              className={({ isActive }) =>
+                `flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition ${
+                  isActive
+                    ? 'bg-accent-cyan/10 text-accent-cyan border border-accent-cyan/20'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-surface-300'
+                }`
+              }
+            >
+              <Terminal className="w-4 h-4" />
+              <div className="flex items-center justify-between flex-1">
+                <span>Live NOC Logs</span>
+                {scanningTab && (
+                  <span className="w-2 h-2 rounded-full bg-accent-cyan animate-ping" />
+                )}
+              </div>
+            </NavLink>
           </nav>
         </div>
 
@@ -231,7 +366,7 @@ export const AppLayout: React.FC = () => {
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* Top Header with Functional Global Search */}
-        <header className="h-16 bg-surface-200/80 backdrop-blur border-b border-border-subtle px-6 flex items-center justify-between shrink-0">
+        <header className="h-16 bg-surface-200/80 backdrop-blur border-b border-border-subtle px-6 flex items-center justify-between shrink-0 relative z-30">
           {/* Global Search Bar */}
           <div ref={searchContainerRef} className="relative w-96">
             <form onSubmit={handleSearchSubmit}>
@@ -349,13 +484,29 @@ export const AppLayout: React.FC = () => {
           </div>
 
           {/* Top Status & Controls */}
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
+            {/* Live Global Scanning Indicator Pill */}
+            {scanningTab && (
+              <button
+                onClick={() => navigate('/terminal')}
+                className="flex items-center gap-2 px-3 py-1 rounded-full bg-cyan-500/15 border border-cyan-500/40 text-cyan-300 font-mono text-xs animate-pulse hover:bg-cyan-500/25 transition"
+                title="Discovery scan in progress - Click to view live NOC terminal"
+              >
+                <Radio className="w-3.5 h-3.5 text-accent-cyan animate-spin" />
+                <span className="font-bold">SCANNING: {scanningTab.title}</span>
+                <span className="text-slate-400">({scanningTab.progress.processed}/{scanningTab.progress.total})</span>
+              </button>
+            )}
+
             <div className="flex items-center gap-2 px-3 py-1 rounded bg-surface-300 border border-border-subtle text-xs">
               <span className="w-2 h-2 rounded-full bg-status-healthy"></span>
               <span className="text-slate-300 font-mono text-[11px]">NOC ENGINE: ACTIVE</span>
             </div>
           </div>
         </header>
+
+        {/* 🚀 Browser-Style Network Tabs & Workspace Bar */}
+        <NetworkTabBar />
 
         {/* Dynamic Route Body */}
         <main className="flex-1 overflow-y-auto bg-background p-6">

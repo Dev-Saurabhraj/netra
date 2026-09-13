@@ -106,13 +106,25 @@ class SnmpCollector(DiscoveryCollector):
             descr_rows = await snmp_walk(engine, auth_data, transport, oids.IF_DESCR_ENTRY)
             for oid_str, val in descr_rows:
                 idx = int(oid_str.split(".")[-1])
+                val_str = str(val).strip()
                 interfaces_map[idx] = {
                     "if_index": idx,
-                    "name": f"eth{idx-1}",
-                    "description": str(val),
+                    "name": val_str if val_str and not val_str.startswith("0x") else f"eth{idx-1}",
+                    "description": val_str,
                     "admin_status": "UP",
                     "oper_status": "UP"
                 }
+
+            # Walk ifName (RFC 2863) to get canonical port names (e.g., ge-0/0/1, GigabitEthernet0/1)
+            try:
+                name_rows = await snmp_walk(engine, auth_data, transport, oids.IF_NAME_ENTRY)
+                for oid_str, val in name_rows:
+                    idx = int(oid_str.split(".")[-1])
+                    val_str = str(val).strip()
+                    if idx in interfaces_map and val_str:
+                        interfaces_map[idx]["name"] = val_str
+            except Exception:
+                pass
 
             # Walk ifOperStatus
             oper_rows = await snmp_walk(engine, auth_data, transport, oids.IF_OPER_STATUS_ENTRY)
